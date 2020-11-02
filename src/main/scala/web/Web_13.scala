@@ -116,7 +116,6 @@ object Web_13 {
 
   // REQUEST
   final case class Request[+A](endpoint: Endpoint, data: Request.Data[A])
-
   object Request {
     final case class Data[+A](headers: List[Header], content: Content[A])
     sealed trait Content[+A] extends Product with Serializable
@@ -127,8 +126,8 @@ object Web_13 {
     }
   }
 
+  // RESPONSE
   sealed trait Response[+A] extends Product with Serializable
-
   object Response {
     final case class Http[+A](status: Status, headers: List[Header] = Nil, content: Content[A] = Content.Empty)
         extends Response[A]
