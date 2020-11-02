@@ -24,12 +24,13 @@ package object web {
     case object HTTPS extends Scheme
   }
 
-  sealed trait Path {
+  sealed trait Path { self =>
     def asString: String
     def /(name: String): Path      = append(name)
     def append(name: String): Path = if (name.isEmpty) this else Path./(this, name)
     def toList: List[String]
     override def toString: String  = this.asString
+    def toURL: URL                 = URL(self, URL.Connection.Relative)
   }
 
   object Path {

@@ -2,6 +2,8 @@ package web
 
 import zio._
 import zio.stream._
+import _root_.web.Web_1.Header.ContentType
+import _root_.web.Web_1.Header.ContentTypeValues
 
 object Web_13 {
   type Endpoint = (Method, URL)
@@ -149,18 +151,19 @@ object Web_13 {
     import Method._
     import Path._
     import Response._
+    import Header.{ContentTypeValue => content}
 
-    def contentLength =
+    def contentLength: HttpMiddleware[Any, Response[ByteBuf]] =
       HttpMiddleware.response[ByteBuf] {
         case res @ Response.Http(status, headers, Content.Complete(body)) =>
           res.copy(headers = Header.ContentLength(body.readableBytes) :: headers)
       }
 
-    def plainText[A] =
+    def contentType[A](cType: Header.ContentTypeValue): HttpMiddleware[Any, Response[A]] =
       HttpMiddleware.response[A] {
         case res @ Response.Http(status, headers, Content.Complete(body)) =>
           if (headers.contains(Header.ContentType)) res
-          else res.copy(headers = (Header.ContentType(Header.ContentTypeValue.PlainText) :: res.headers))
+          else res.copy(headers = (Header.ContentType(cType) :: res.headers))
       }
 
     def statusCode[A](status: Status): HttpRoute[Any, A] =
@@ -173,8 +176,17 @@ object Web_13 {
     def health[A]: HttpRoute[Any, A] =
       HttpRoute.of { case GET -> Root / "health" -> _ => Response.Http(Status.OK) }
 
-    def app                          = health[ByteBuf] >>> contentLength
+    def socket[A]: HttpRoute[Any, A] =
+      HttpRoute.of {
+        case r @ GET -> Root / "ws" -> _ => Response.Socket(r._1._2.toURL, ???)
+      }
 
+    def app =
+      health[ByteBuf] <> notFound >>> {
+        contentLength >>> {
+          contentType[ByteBuf](content.PlainText)
+        }
+      }
   }
 }
 
