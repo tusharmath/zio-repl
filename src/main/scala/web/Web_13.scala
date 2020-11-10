@@ -182,7 +182,7 @@ object Web_13 {
       }
 
     def app =
-      health[ByteBuf] <> notFound >>> {
+      health[ByteBuf] <> socket <> notFound >>> {
         contentLength >>> {
           contentType[ByteBuf](content.PlainText)
         }

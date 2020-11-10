@@ -55,7 +55,6 @@ package object web {
       def asString: String     = ""
       def toList: List[String] = Nil
     }
-
   }
 
   case class URL(path: Path, connection: URL.Connection)
