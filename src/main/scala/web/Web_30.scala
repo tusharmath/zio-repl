@@ -7,7 +7,6 @@ import javax.xml.crypto.Data
 
 object Web_30 {
   type Endpoint = (Method, URL)
-  type Route    = (Method, Path)
 
   type SocketMiddleware
 
@@ -21,7 +20,7 @@ object Web_30 {
 
   sealed trait Header
   object Header {
-    final case class ContentLength(len: Int)              extends Header
+    final case class ContentLength(len: Long)             extends Header
     final case class ContentType(value: ContentTypeValue) extends Header
     final case class X(name: String, value: String)       extends Header
     sealed trait ContentTypeValue
@@ -50,6 +49,20 @@ object Web_30 {
         case Response.Http(status, headers, content) =>
           Response.Http(status, header :: headers, content)
         case Response.Socket(url, socket)            => self
+      }
+
+    def updateContentLength: Response =
+      self match {
+        case m @ Response.Http(_, _, Response.Content.Complete(body)) =>
+          m.copy(headers = Header.ContentLength(body.readableBytes) :: m.headers)
+        case m                                                        => m
+      }
+
+    def updateContentLength(len: Long): Response =
+      self match {
+        case m @ Response.Http(_, _, Response.Content.Complete(_)) =>
+          m.copy(headers = Header.ContentLength(len) :: m.headers)
+        case m                                                     => m
       }
   }
   object Response {
@@ -103,6 +116,11 @@ object Web_30 {
     }
   }
 
+  type HttpRoute[-R] = Http[R, Unit, Request, Response]
+  object HttpRoute {
+    def of[R](func: Request => ZIO[R, Unit, Response]): HttpRoute[R] = Http.of(func)
+  }
+
   object Example {
     type Database      = Has[Database.Service]
     type Authenticator = Has[Authenticator.Service]
@@ -122,25 +140,19 @@ object Web_30 {
 
     def notFound = Http.succeed(Response.Http(Status.PAGE_NOT_FOUND))
 
-    def setContentLength[R, E](http: Http[R, E, Request, Response]) =
-      Http.of[Request] { req =>
-        http(req) map {
-          case m @ Response.Http(_, _, Response.Content.Complete(body)) =>
-            m.copy(headers = Header.ContentLength(body.readableBytes) :: m.headers)
-          case m                                                        => m
-        }
-      }
+    def setContentLength[R, E](http: HttpRoute[R]) =
+      HttpRoute.of(req => http(req).map(_.updateContentLength))
 
-    def auth[R, E](http: Http[R, E, Request, Response]) =
-      Http.of[Request] { req =>
+    def auth[R, E](http: HttpRoute[R]) =
+      HttpRoute.of { req =>
         isAuthenticated(req) >>= {
           case true  => http(req)
           case false => UIO(Response.Http(Status.UNAUTHORIZED))
         }
       }
 
-    def setResponseTiming[R, E](http: Http[R, E, Request, Response]) =
-      Http.of[Request] { req =>
+    def setResponseTiming[R, E](http: HttpRoute[R]) =
+      HttpRoute.of { req =>
         for {
           start <- clock.nanoTime
           res   <- http(req)
@@ -148,6 +160,11 @@ object Web_30 {
         } yield res.withHeader(Header.X("ResponseTime", (end - start).toString()))
       }
 
-    def server = setContentLength(setResponseTiming(auth(health) <> notFound))
+    def server =
+      setResponseTiming {
+        setContentLength {
+          auth(health) <> notFound
+        }
+      }
   }
 }
