@@ -1,0 +1,36 @@
+# MQTT Domain
+
+- Models what the MQTT clients should do on every internal client event.
+
+- Domain is built to solve a very specific set of problems.
+- In this case the MQTT domain is supposed to configure the internal workings of the client.
+  - Making sure the connection is done once
+  - Making sure that connection is made in case publish happens before connection.
+  - Making sure the connection is established only once.
+  - Pre process messages for performance.
+
+There are two options to do this
+
+1. Use a ZIO based internal API
+
+   - PRO
+
+     1. Easily interop between ZIO and STM
+     2. Easy to add various services
+
+   - CON
+
+     1. Too flexible
+     2. Difficult to test
+
+2. Create a MQTT domain
+
+   - Extremely strict set of features
+   - Will not allow any STM or ZIO or Service code.
+
+   - Usage of state makes is a bit difficult
+
+Issues in the current design
+
+1. The concept of Init Update Command is too clunky
+2. Update and Command are too specific to Mqtt.
