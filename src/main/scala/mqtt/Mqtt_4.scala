@@ -2,7 +2,6 @@ package mqtt
 
 import zio._
 import zio.stm._
-import java.util.concurrent.Executor
 
 object Mqtt_4 {
   type Topic
@@ -14,140 +13,76 @@ object Mqtt_4 {
     def publish(topic: Topic, data: Data): Unit
   }
 
-  sealed trait Mqtt[+A] { self =>
-    def map[A1](ab: A => A1): Mqtt[A1]           = self.flatMap(m => Mqtt.succeed(ab(m)))
-    def flatMap[A1](ab: A => Mqtt[A1]): Mqtt[A1] = Mqtt.FFlatmap(self, ab)
-    def >>=[A1](ab: A => Mqtt[A1]): Mqtt[A1]     = self.flatMap(ab)
-    def *>[A1](ab: Mqtt[A1]): Mqtt[A1]           = self.flatMap(_ => ab)
-    def as[A1](a1: A1): Mqtt[A1]                 = self.map(_ => a1)
-    def nothing: Mqtt[Nothing]                   = Mqtt.nothing
+  sealed trait Event
+  object Event {
+    sealed trait User extends Event
+    object User {
+      case class Subscribed(topic: Topic)            extends User
+      case class Unubscribed(topic: Topic)           extends User
+      case class Published(topic: Topic, data: Data) extends User
+    }
+
+    sealed trait Broker extends Event
+    object Broker {
+      case class ConnectionComplete(reconnect: Boolean, serverURI: String) extends Broker
+      case class ConnectionLost(cause: Throwable)                          extends Broker
+      case class MessageArrived(topic: Topic, data: Data)                  extends Broker
+      case class DeliveryComplete(message: Data)                           extends Broker
+    }
+  }
+
+  sealed trait Mqtt[-S, +A] { self =>
+    def map[A1](ab: A => A1): Mqtt[S, A1]                          = self.flatMap(m => Mqtt.succeed(ab(m)))
+    def flatMap[S1 <: S, A1](ab: A => Mqtt[S1, A1]): Mqtt[S1, A1]  = Mqtt.FFlatmap(self, ab)
+    def >>=[S1 <: S, A1 >: A](ab: A => Mqtt[S1, A1]): Mqtt[S1, A1] = self.flatMap(ab)
+    def *>[S1 <: S, A1 >: A](ab: Mqtt[S1, A1]): Mqtt[S1, A1]       = self.flatMap(_ => ab)
+    def as[S1 <: S, A1 >: A](a1: A1): Mqtt[S1, A1]                 = self.map(_ => a1)
+    def nothing: Mqtt[Nothing, Nothing]                            = Mqtt.nothing
+    def unit: Mqtt[S, Unit]                                        = self.map(_ => ())    
   }
 
   object Mqtt {
-    case object Empty extends Mqtt[Nothing]
-
-    case class Succeed[A](message: A)            extends Mqtt[A]
-    case class Subscribe(topic: List[Topic])     extends Mqtt[Unit]
-    case class Unsubscribe(topic: Topic)         extends Mqtt[Unit]
-    case class Publish(topic: Topic, data: Data) extends Mqtt[Unit]
-
-    case class FFlatmap[A0, A1](mqtt: Mqtt[A0], ab: A0 => Mqtt[A1]) extends Mqtt[A1]
-
-    sealed trait Event
-    object Event {
-      sealed trait User extends Event
-      object User {
-        case class Subscribed(topic: Topic)            extends User
-        case class Unubscribed(topic: Topic)           extends User
-        case class Published(topic: Topic, data: Data) extends User
-      }
-
-      sealed trait Broker extends Event
-      object Broker {
-        case class ConnectionComplete(reconnect: Boolean, serverURI: String) extends Broker
-        case class ConnectionLost(cause: Throwable)                          extends Broker
-        case class MessageArrived(topic: Topic, data: Data)                  extends Broker
-        case class DeliveryComplete(message: Data)                           extends Broker
-      }
+    case object Empty                                                        extends Mqtt[Any, Nothing]
+    case class Read[S]()                                                     extends Mqtt[S, S] {
+      def get[S1 >: S, S2 <: S](ref: Ref[S2]): UIO[S1] = ref.get
     }
+    case class Succeed[A](message: A)                                        extends Mqtt[Any, A]
+    case class Subscribe(topic: Topic)                                       extends Mqtt[Any, Unit]
+    case class Unsubscribe(topic: Topic)                                     extends Mqtt[Any, Unit]
+    case class Publish(topic: Topic, data: Data)                             extends Mqtt[Any, Unit]
+    case class Update[S](ss: S => S)                                         extends Mqtt[S, S]
+    case class FFlatmap[S, A0, A1](mqtt: Mqtt[S, A0], ab: A0 => Mqtt[S, A1]) extends Mqtt[S, A1]
 
-    def publish(topic: Topic, data: Data): Mqtt[Unit] = Mqtt.Publish(topic, data)
-    def succeed[A](message: A): Mqtt[A]               = Mqtt.Succeed(message)
-    def subscribe(topic: Topic*): Mqtt[Unit]          = Mqtt.Subscribe(topic.toList)
-    def subscribe(topic: List[Topic]): Mqtt[Unit]     = Mqtt.Subscribe(topic)
-    def unsubscribe(topic: Topic): Mqtt[Unit]         = Mqtt.Unsubscribe(topic)
-    def nothing: Mqtt[Nothing]                        = Mqtt.Empty
-    def update[S]: Update.CtorOF[S, Mqtt.Event]       = Update.CtorOF(())
-    def command[S]: Command.CtorOF[S, Mqtt.Event]     = Command.CtorOF(())
+    def read[S](): Mqtt[S, S]                                   = Mqtt.Read()
+    def update[S](ss: S => S): Mqtt[S, S]                       = Mqtt.Update(ss)
+    def publish(topic: Topic, data: Data): Mqtt[Any, Unit]      = Mqtt.Publish(topic, data)
+    def succeed[A](message: A): Mqtt[Any, A]                    = Mqtt.Succeed(message)
+    def subscribe(topic: Topic): Mqtt[Any, Unit]                = Mqtt.Subscribe(topic)
+    def unsubscribe(topic: Topic): Mqtt[Any, Unit]              = Mqtt.Unsubscribe(topic)
+    def nothing: Mqtt[Any, Nothing]                             = Mqtt.Empty
+    def foreach[S, A](list: List[Mqtt[S, A]]): Mqtt[S, List[A]] = ???
 
     trait Interpreter {
-      def execute[A](mqtt: Mqtt[A]): IO[Unit, A]
+      def execute[S, A](ref: Ref[S], mqtt: Mqtt[S, A]): IO[Unit, A]
     }
 
-    final case class PahoInterpreter(client: PahoClient) extends Interpreter {
-      def execute[A](mqtt: Mqtt[A]): IO[Unit, A] =
+    final case class PahoInterpreter[S](client: PahoClient) extends Interpreter {
+      def execute[S, A](ref: Ref[S], mqtt: Mqtt[S, A]): IO[Unit, A] =
         mqtt match {
+          // case Mqtt.Update(f: (S => S))  => ref.updateAndGet(f)
+          // case m @ Mqtt.Read()           => m.get(ref)
           case Mqtt.Empty                => ZIO.fail(())
           case Mqtt.Succeed(message)     => ZIO.succeed(message)
-          case Mqtt.Subscribe(topic)     => ZIO.foreach(topic) { o => UIO(client.subscribe(o)) }.unit
+          case Mqtt.Subscribe(topic)     => UIO(client.subscribe(topic))
           case Mqtt.Unsubscribe(topic)   => UIO(client.unsubscribe(topic))
           case Mqtt.Publish(topic, data) => UIO(client.publish(topic, data))
-          case Mqtt.FFlatmap(mqtt, ab)   => execute(mqtt).flatMap(a => execute(ab(a)))
+          case Mqtt.FFlatmap(mqtt, ab)   => execute(ref, mqtt).flatMap(a => execute(ref, ab(a)))
         }
     }
   }
 
-  sealed trait MqttApp[+S] { self =>
-    def ::[S1 >: S](other: MqttApp[S1]): MqttApp[S1] = MqttApp.Concat(self, other)
-    def init[S1 >: S](S: S1): MqttApp.Runnable[S1]   = MqttApp.init(self, S)
-  }
-  object MqttApp           {
-
-    case class Init[S](S: S) { self =>
-      def ++(other: Init[S]): Init[S] = other
-    }
-
-    sealed trait Update[S] extends MqttApp[S] { self =>
-      def ++(other: Update[S]): Update[S] = Update.concat(self, other)
-    }
-    object Update {
-      final case class Empty[S]()                        extends Update[S]
-      final case class Total[S](f: (S, Mqtt.Event) => S) extends Update[S]
-
-      def concat[S](self: Update[S], other: Update[S]): Update[S] = (self, other) match {
-        case (Empty(), update)      => update
-        case (update, Empty())      => update
-        case (Total(f1), Total(f2)) => Total[S]((S, E) => f2(f1(S, E), E))
-      }
-    }
-
-    sealed trait Command[S] extends MqttApp[S] { self =>
-      def ++(other: Command[S]): Command[S] = Command.concat(self, other)
-    }
-    object Command {
-      case class Empty[S]()                                 extends Command[S]
-      case class Total[S](f: (S, Mqtt.Event) => Mqtt[Unit]) extends Command[S]
-
-      def concat[S](c1: Command[S], c2: Command[S]): Command[S] = (c1, c2) match {
-        case (Empty(), Empty())     => Empty()
-        case (c, Empty())           => c
-        case (Empty(), c)           => c
-        case (Total(f1), Total(f2)) => Total((S, E) => f1(S, E) *> f2(S, E))
-      }
-    }
-
-    final case class Concat[S](self: MqttApp[S], other: MqttApp[S]) extends MqttApp[S]
-
-    def update[S](pf: PartialFunction[(S, Mqtt.Event), S]): MqttApp[S]           =
-      Update.Total[S]((S, E) => if (pf.isDefinedAt(S -> E)) pf(S -> E) else S)
-
-    def command[S](pf: PartialFunction[(S, Mqtt.Event), Mqtt[Unit]]): MqttApp[S] =
-      Command.Total[S]((S, E) => if (pf.isDefinedAt(S -> E)) pf(S -> E) else Mqtt.nothing)
-
-    def concat[S](self: MqttApp[S], other: MqttApp[S]): MqttApp[S]               =
-      Concat(self, other)
-
-    case class Runnable[S](
-      init: Init[S],
-      update: Update[S] = Update.Empty[S],
-      command: Command[S] = Command.Empty[S],
-    ) { self =>
-      def ++(other: Runnable[S]): Runnable[S] = Runnable(
-        self.init ++ other.init,
-        self.update ++ other.update,
-        self.command ++ other.command,
-      )
-    }
-
-    def init[S](app: MqttApp[S], S: S): MqttApp.Runnable[S] = app match {
-      case m: MqttApp.Update[S]        => Runnable(init = Init(S), update = m)
-      case m: MqttApp.Command[S]       => Runnable(init = Init(S), command = m)
-      case MqttApp.Concat(self, other) => self.init(S) ++ other.init(S)
-    }
-  }
-
   object Example {
-    import Mqtt.Event._
+    import Event._
 
     type Processed
     def process(topic: Topic, message: Data): Processed = ???
@@ -170,30 +105,39 @@ object Mqtt_4 {
       def countIs(topic: Topic, i: Int): Boolean = ???
     }
 
-    val update = MqttApp.update[State] {
-      case s -> User.Subscribed(topic)  => s.add(topic)
-      case s -> User.Unubscribed(topic) => s.remove(topic)
+    def program(ev: Event): Mqtt[State, Unit] = ev match {
+      case User.Subscribed(topic)             => Mqtt.update[State](_.add(topic)).unit
+      case User.Unubscribed(topic)            => Mqtt.update[State](_.remove(topic)).unit
+      case User.Published(topic, data)        => Mqtt.publish(topic, data)
+      // case Broker.ConnectionComplete(reconnect, serverURI) =>
+      //   for {
+      //     s <- Mqtt.read >>= { s => Mqtt.foreach(s.topics.keys.toList.map(Mqtt.subscribe(_))).unit }
+
+      //   } yield ()
+      case Broker.ConnectionLost(cause)       => ???
+      case Broker.MessageArrived(topic, data) => ???
+      case Broker.DeliveryComplete(message)   => ???
     }
 
-    val userCommand = MqttApp.command[State] {
-      case _ -> User.Published(topic, data) =>
-        Mqtt.publish(topic, data).nothing
+    // val program = Mqtt.of[State] {
+    //   case s -> User.Subscribed(topic) => s.add(topic)
 
-      case s -> User.Subscribed(topic) =>
-        if (s.count(topic) == 1) Mqtt.subscribe(topic).nothing else Mqtt.nothing
-    }
+    //   case s -> User.Unubscribed(topic) => s.remove(topic)
 
-    val brokerCommand = MqttApp.command[State] {
-      case s -> User.Unubscribed(topic) =>
-        if (s.count(topic) == 0) Mqtt.unsubscribe(topic).nothing else Mqtt.nothing
+    //   case _ -> User.Published(topic, data) =>
+    //     Mqtt.publish(topic, data).nothing
 
-      case s -> Broker.ConnectionComplete(true, _) =>
-        Mqtt.subscribe(s.topics.keys.toList).nothing
+    //   case s -> User.Subscribed(topic) =>
+    //     if (s.count(topic) == 1) Mqtt.subscribe(topic).nothing else Mqtt.nothing
 
-      case _ -> Broker.MessageArrived(topic, data) =>
-        Mqtt.succeed(process(topic, data)) *> Mqtt.succeed(process(topic, data))
-    }
+    //   case s -> User.Unubscribed(topic) =>
+    //     if (s.count(topic) == 0) Mqtt.unsubscribe(topic).nothing else Mqtt.nothing
 
-    val d11 = update :: userCommand :: brokerCommand
+    //   case s -> Broker.ConnectionComplete(true, _) =>
+    //     Mqtt.subscribe(s.topics.keys.toList).nothing
+
+    //   case _ -> Broker.MessageArrived(topic, data) =>
+    //     Mqtt.succeed(process(topic, data)) *> Mqtt.succeed(process(topic, data))
+    // }
   }
 }
